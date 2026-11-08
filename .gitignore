@@ -50,3 +50,16 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Local runtime config / state
+server/config.yaml
+data/
+esphome/secrets.yaml
+esphome/.esphome/

@@ -1,0 +1,20 @@
+services:
+  photoframe:
+    build: ./server
+    container_name: photoframe-immich
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      IMMICH_URL: ${IMMICH_URL:-http://immich-server:2283}
+      IMMICH_API_KEY: ${IMMICH_API_KEY}
+    volumes:
+      - ./server/config.yaml:/config/config.yaml:ro
+      - ./data:/data
+    # If Immich runs in Docker on the same host, join its network so
+    # http://immich-server:2283 resolves:
+    # networks: [immich_default]
+
+# networks:
+#   immich_default:
+#     external: true

@@ -1,0 +1,73 @@
+# Seeed reTerminal E1002 hardware definition (ESP32-S3, 7.3" Spectra 6, 800x480).
+# Pins from Seeed's "ESPHome Cookbook (reTerminal E Series)" wiki pages.
+# Requires ESPHome 2025.11 or newer (epaper_spi Seeed-reTerminal-E1002 preset).
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8   # only used by the microSD slot on the same bus
+
+display:
+  - platform: epaper_spi
+    id: epaper
+    model: Seeed-reTerminal-E1002   # preset sets CS/DC/RST/BUSY and 800x480
+    update_interval: never
+
+output:
+  - platform: gpio
+    id: battery_enable
+    pin: GPIO21
+  - platform: gpio
+    id: status_led_out
+    pin:
+      number: GPIO6
+      inverted: true
+
+sensor:
+  - platform: adc
+    id: battery_voltage
+    name: "Battery voltage"
+    pin: GPIO1
+    attenuation: 12db
+    update_interval: never
+    accuracy_decimals: 2
+    filters:
+      - multiply: 2.0
+  - platform: template
+    id: battery_level
+    name: "Battery level"
+    unit_of_measurement: "%"
+    device_class: battery
+    accuracy_decimals: 0
+    update_interval: never
+    lambda: return id(battery_voltage).state;
+    filters:
+      - calibrate_linear:
+          - 4.15 -> 100.0
+          - 3.27 -> 0.0
+      - clamp:
+          min_value: 0
+          max_value: 100
+
+binary_sensor:
+  - platform: gpio
+    id: button_green
+    name: "Green button"
+    pin: { number: GPIO3, mode: INPUT_PULLUP, inverted: true, ignore_strapping_warning: true }  # strapping pin; wired this way by Seeed
+  - platform: gpio
+    id: button_right
+    name: "Right button"
+    pin: { number: GPIO4, mode: INPUT_PULLUP, inverted: true, allow_other_uses: true }  # also the deep-sleep wake pin
+  - platform: gpio
+    id: button_left
+    name: "Left button"
+    pin: { number: GPIO5, mode: INPUT_PULLUP, inverted: true }

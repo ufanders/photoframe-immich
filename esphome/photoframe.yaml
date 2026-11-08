@@ -1,0 +1,246 @@
+# Immich photo frame for the Seeed reTerminal E1002.
+#
+# Each wake: connect Wi-Fi -> GET /config.json (reports battery, gets timing)
+# -> download /frame.png (already dithered to the 6 inks by the server)
+# -> refresh panel -> deep sleep for sleep_minutes.
+#
+# Buttons: right = wake + next photo (the deep-sleep wake pin)
+#          green = next photo (while awake)
+#          left  = hold while waking to stay awake (for OTA/logs); press while awake to toggle
+
+substitutions:
+  name: photoframe
+  friendly_name: Photo Frame
+  server_url: http://192.168.1.10:8080   # where photoframe-immich runs
+
+packages:
+  hardware: !include reterminal-e1002.yaml
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    - priority: 600
+      then:
+        - output.turn_on: battery_enable
+    - priority: -100
+      then:
+        - if:
+            condition:
+              binary_sensor.is_on: button_left
+            then:
+              - logger.log: "Left button held at boot: staying awake"
+              - switch.turn_on: stay_awake
+        - script.execute: refresh_cycle
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true        # skip the scan; saves a few seconds of battery per wake
+  reboot_timeout: 0s        # we handle failures by sleeping, not rebooting
+  # Static IP connects faster than DHCP; uncomment and fill in to use it.
+  # manual_ip:
+  #   static_ip: 192.168.1.50
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+  #   dns1: 192.168.1.1
+
+api:
+  encryption:
+    key: !secret api_key
+  reboot_timeout: 0s        # Home Assistant is optional
+
+ota:
+  - platform: esphome
+
+http_request:
+  timeout: 30s
+  verify_ssl: false
+
+deep_sleep:
+  id: deep_sleep_ctrl
+  # Right button. Idle level is high, so INVERT_WAKEUP makes a press (low) wake us.
+  wakeup_pin:
+    number: GPIO4
+    allow_other_uses: true
+  wakeup_pin_mode: INVERT_WAKEUP
+
+globals:
+  - { id: sleep_minutes, type: int, initial_value: "60" }
+  - { id: retry_minutes, type: int, initial_value: "15" }
+  - { id: low_battery_percent, type: int, initial_value: "15" }
+  - { id: low_battery_sleep_minutes, type: int, initial_value: "360" }
+  - { id: server_stay_awake, type: bool, initial_value: "false" }
+  - { id: download_done, type: bool, initial_value: "false" }
+  - { id: download_ok, type: bool, initial_value: "false" }
+  - { id: minutes_awake_since_refresh, type: int, initial_value: "0" }
+
+switch:
+  - platform: template
+    id: stay_awake
+    name: "Stay awake"
+    icon: mdi:sleep-off
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_off:
+      # Ignore the restore at boot; only react to a real toggle later on.
+      - if:
+          condition:
+            lambda: return millis() > 60000 && !id(refresh_cycle).is_running();
+          then:
+            - script.execute: { id: maybe_sleep, failed: false }
+
+button:
+  - platform: template
+    name: "Next photo"
+    on_press:
+      - script.execute: refresh_cycle
+
+image:
+  - platform: online_image
+    id: photo
+    url: ${server_url}/frame.png
+    format: PNG
+    type: RGB565
+    on_download_finished:
+      - lambda: |-
+          id(download_ok) = true;
+          id(download_done) = true;
+    on_error:
+      - logger.log: { level: WARN, format: "Image download failed" }
+      - lambda: |-
+          id(download_ok) = false;
+          id(download_done) = true;
+
+display:
+  - id: !extend epaper
+    lambda: |-
+      it.fill(Color::WHITE);
+      it.image(0, 0, id(photo));
+      // Small battery warning in the top-right corner when low.
+      float pct = id(battery_level).state;
+      if (!std::isnan(pct) && pct < id(low_battery_percent)) {
+        const int x = it.get_width() - 52, y = 8;
+        it.filled_rectangle(x - 4, y - 4, 48, 24, Color::WHITE);
+        it.rectangle(x, y, 36, 16, Color::BLACK);
+        it.filled_rectangle(x + 36, y + 4, 4, 8, Color::BLACK);
+        it.filled_rectangle(x + 2, y + 2, 6, 12, Color(255, 0, 0));
+      }
+
+binary_sensor:
+  - id: !extend button_green
+    on_press:
+      - script.execute: refresh_cycle
+  - id: !extend button_right
+    on_press:
+      - script.execute: refresh_cycle
+  - id: !extend button_left
+    on_click:
+      - switch.toggle: stay_awake
+
+interval:
+  # While staying awake, refresh on the server-provided schedule.
+  - interval: 1min
+    then:
+      - lambda: id(minutes_awake_since_refresh) += 1;
+      - if:
+          condition:
+            lambda: return id(minutes_awake_since_refresh) >= id(sleep_minutes);
+          then:
+            - script.execute: refresh_cycle
+
+script:
+  - id: refresh_cycle
+    mode: single
+    then:
+      - lambda: id(minutes_awake_since_refresh) = 0;
+      - component.update: battery_voltage
+      - component.update: battery_level
+      - wait_until:
+          condition: wifi.connected
+          timeout: 20s
+      - if:
+          condition:
+            not: wifi.connected
+          then:
+            - logger.log: { level: WARN, format: "No Wi-Fi; keeping current picture" }
+            - script.execute: { id: maybe_sleep, failed: true }
+            - script.stop: refresh_cycle
+
+      # Timing settings + battery report. Failures here are non-fatal.
+      - http_request.get:
+          url: !lambda |-
+            char buf[96];
+            float pct = id(battery_level).state;
+            snprintf(buf, sizeof(buf), "${server_url}/config.json?battery=%d", std::isnan(pct) ? -1 : (int) pct);
+            return std::string(buf);
+          capture_response: true
+          max_response_buffer_size: 1024
+          on_response:
+            then:
+              - if:
+                  condition:
+                    lambda: return response->status_code == 200;
+                  then:
+                    - lambda: |-
+                        json::parse_json(body, [](JsonObject root) -> bool {
+                          if (root["sleep_minutes"].is<int>()) id(sleep_minutes) = root["sleep_minutes"];
+                          if (root["retry_minutes"].is<int>()) id(retry_minutes) = root["retry_minutes"];
+                          if (root["low_battery_percent"].is<int>()) id(low_battery_percent) = root["low_battery_percent"];
+                          if (root["low_battery_sleep_minutes"].is<int>()) id(low_battery_sleep_minutes) = root["low_battery_sleep_minutes"];
+                          if (root["stay_awake"].is<bool>()) id(server_stay_awake) = root["stay_awake"];
+                          return true;
+                        });
+          on_error:
+            - logger.log: { level: WARN, format: "config.json request failed; using previous settings" }
+
+      # Download the next photo (the server advances on each request).
+      - lambda: |-
+          id(download_done) = false;
+          id(download_ok) = false;
+      - component.update: photo
+      - wait_until:
+          condition:
+            lambda: return id(download_done);
+          timeout: 60s
+      - if:
+          condition:
+            lambda: return !id(download_ok);
+          then:
+            - logger.log: { level: WARN, format: "No new photo; keeping current picture" }
+            - script.execute: { id: maybe_sleep, failed: true }
+            - script.stop: refresh_cycle
+
+      - component.update: epaper
+      - delay: 2s
+      - wait_until:
+          condition:
+            not:
+              epaper_spi.is_updating: epaper
+          timeout: 90s
+      - online_image.release: photo     # free ~750 KB of PSRAM while idle
+      - script.execute: { id: maybe_sleep, failed: false }
+
+  - id: maybe_sleep
+    mode: restart
+    parameters:
+      failed: bool
+    then:
+      - if:
+          condition:
+            lambda: return id(stay_awake).state || id(server_stay_awake);
+          then:
+            - logger.log: "Staying awake"
+          else:
+            - delay: 1s   # let logs / HA state flush
+            - deep_sleep.enter:
+                id: deep_sleep_ctrl
+                sleep_duration: !lambda |-
+                  float pct = id(battery_level).state;
+                  int minutes = id(sleep_minutes);
+                  if (failed) minutes = id(retry_minutes);
+                  else if (!std::isnan(pct) && pct < id(low_battery_percent)) minutes = id(low_battery_sleep_minutes);
+                  ESP_LOGI("photoframe", "Sleeping for %d min", minutes);
+                  return (uint32_t) minutes * 60u * 1000u;

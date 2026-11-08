@@ -1,0 +1,66 @@
+# Copy to config.yaml and edit. IMMICH_URL / IMMICH_API_KEY env vars override the first two.
+immich_url: http://immich.lan:2283
+immich_api_key: CHANGE_ME          # Immich → Account Settings → API Keys (asset.read, asset.view, album.read, person.read, tag.read)
+
+# Where history and the last frame are kept (mounted volume in Docker).
+state_dir: /data
+
+# Photo pools. Each wake, one source is picked at random by weight, then a photo
+# from it. Filters inside one source are combined with AND. Lists (albums,
+# people, tags) mean "any of these" unless noted. Open http://<server>:8080/
+# to see the exact album / person / tag names your Immich knows about.
+sources:
+  - name: family-album
+    weight: 3
+    albums: ["Family"]
+
+  - name: the-kids
+    weight: 2
+    people: ["Alice", "Bob"]
+    people_match: any            # "all" = only photos with every listed person
+    taken_after: 2022-01-01
+
+  - name: favorites
+    weight: 2
+    favorites: true
+
+  - name: best-rated-travel
+    weight: 1
+    tags: ["Travel"]
+    min_rating: 4                # needs star ratings enabled in Immich settings
+
+  - name: mountains
+    weight: 1
+    smart_query: "mountain landscape at sunset"   # CLIP search, ranked by relevance
+    max_candidates: 150          # only the top matches are relevant
+    # other filters: city, state, country, taken_before
+
+orientation: landscape_preferred   # landscape_only | landscape_preferred | any
+portrait_weight: 0.25              # how often portraits win under landscape_preferred
+history_size: 100                  # avoid repeating the last N photos
+candidate_cache_minutes: 60
+
+render:
+  saturation: 1.5      # Spectra 6 inks are muted; boost colour a lot
+  contrast: 1.15
+  brightness: 1.0
+  sharpness: 1.0
+  dither: floyd-steinberg   # or none
+  portrait_mode: blur_fill  # or crop
+  face_aware_crop: true
+  # Approximate colours the inks actually show. Tune if the panel looks off.
+  # measured_palette:
+  #   black:  [25, 30, 33]
+  #   white:  [232, 232, 224]
+  #   yellow: [239, 222, 68]
+  #   red:    [178, 30, 32]
+  #   blue:   [33, 87, 186]
+  #   green:  [55, 105, 75]
+
+# Read by the frame on every wake (change without reflashing).
+device:
+  sleep_minutes: 60
+  retry_minutes: 15            # after a failed fetch
+  stay_awake: false            # true = keep Wi-Fi on and refresh on the sleep_minutes timer
+  low_battery_percent: 15
+  low_battery_sleep_minutes: 360
