@@ -63,3 +63,4 @@ server/config.yaml
 data/
 esphome/secrets.yaml
 esphome/.esphome/
+immich_apikey
